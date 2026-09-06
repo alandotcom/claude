@@ -1,0 +1,16 @@
+{
+  "description": "After compaction, remind the model that recall can read the messages the summary replaced.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/after-compact.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
