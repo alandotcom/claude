@@ -52,13 +52,7 @@ export function locateTranscript(env: TranscriptEnv, cwd: string): string {
 	const direct = join(projectsDir, encodeProjectDir(env.CLAUDE_PROJECT_DIR ?? cwd), fileName);
 	if (existsSync(direct)) return direct;
 
-	let projectDirs: string[] = [];
-	try {
-		projectDirs = readdirSync(projectsDir);
-	} catch {
-		projectDirs = [];
-	}
-	for (const dir of projectDirs) {
+	for (const dir of existsSync(projectsDir) ? readdirSync(projectsDir) : []) {
 		const candidate = join(projectsDir, dir, fileName);
 		if (existsSync(candidate)) return candidate;
 	}

@@ -60,21 +60,12 @@ export function rankDocuments(documents: SearchDocument[], query: string, queryT
 		const insertExact = index.prepare("INSERT INTO exact_docs(rowid, body) VALUES (?, ?)");
 		const insertStemmed = index.prepare("INSERT INTO stemmed_docs(rowid, body) VALUES (?, ?)");
 		index.exec("BEGIN");
-		try {
-			documents.forEach((document, position) => {
-				const rowId = position + 1;
-				insertExact.run(rowId, document.body);
-				insertStemmed.run(rowId, document.body);
-			});
-			index.exec("COMMIT");
-		} catch (error) {
-			try {
-				index.exec("ROLLBACK");
-			} catch {
-				// The insertion error is the one worth reporting.
-			}
-			throw error;
-		}
+		documents.forEach((document, position) => {
+			const rowId = position + 1;
+			insertExact.run(rowId, document.body);
+			insertStemmed.run(rowId, document.body);
+		});
+		index.exec("COMMIT");
 
 		const ranked = new Map<number, RankedDocument>();
 		const getRanked = (rowId: number): RankedDocument => {
@@ -97,16 +88,18 @@ export function rankDocuments(documents: SearchDocument[], query: string, queryT
 		const stemmedMatches = index.prepare(
 			"SELECT rowid AS rowId, -bm25(stemmed_docs) AS score FROM stemmed_docs WHERE stemmed_docs MATCH ?",
 		);
+		const rows = (statement: typeof exactMatches, terms: string[]) =>
+			statement.all(ftsQuery(terms)) as { rowId: number; score: number }[];
 		if (uniqueTerms.length > 0) {
-			for (const row of exactMatches.all(ftsQuery(uniqueTerms)) as any[]) getRanked(row.rowId).exactScore = row.score;
-			for (const row of stemmedMatches.all(ftsQuery(uniqueTerms)) as any[]) getRanked(row.rowId).stemmedScore = row.score;
+			for (const row of rows(exactMatches, uniqueTerms)) getRanked(row.rowId).exactScore = row.score;
+			for (const row of rows(stemmedMatches, uniqueTerms)) getRanked(row.rowId).stemmedScore = row.score;
 			for (const term of uniqueTerms) {
-				for (const row of exactMatches.all(ftsQuery([term])) as any[]) {
+				for (const row of rows(exactMatches, [term])) {
 					const hit = getRanked(row.rowId);
 					hit.exactTerms.add(term);
 					hit.matchedTerms.add(term);
 				}
-				for (const row of stemmedMatches.all(ftsQuery([term])) as any[]) getRanked(row.rowId).matchedTerms.add(term);
+				for (const row of rows(stemmedMatches, [term])) getRanked(row.rowId).matchedTerms.add(term);
 			}
 		}
 

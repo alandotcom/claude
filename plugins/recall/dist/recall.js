@@ -23227,20 +23227,12 @@ function rankDocuments(documents, query, queryTerms) {
     const insertExact = index.prepare("INSERT INTO exact_docs(rowid, body) VALUES (?, ?)");
     const insertStemmed = index.prepare("INSERT INTO stemmed_docs(rowid, body) VALUES (?, ?)");
     index.exec("BEGIN");
-    try {
-      documents.forEach((document, position) => {
-        const rowId = position + 1;
-        insertExact.run(rowId, document.body);
-        insertStemmed.run(rowId, document.body);
-      });
-      index.exec("COMMIT");
-    } catch (error2) {
-      try {
-        index.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
-    }
+    documents.forEach((document, position) => {
+      const rowId = position + 1;
+      insertExact.run(rowId, document.body);
+      insertStemmed.run(rowId, document.body);
+    });
+    index.exec("COMMIT");
     const ranked = /* @__PURE__ */ new Map();
     const getRanked = (rowId) => {
       const existing = ranked.get(rowId);
@@ -23262,16 +23254,17 @@ function rankDocuments(documents, query, queryTerms) {
     const stemmedMatches = index.prepare(
       "SELECT rowid AS rowId, -bm25(stemmed_docs) AS score FROM stemmed_docs WHERE stemmed_docs MATCH ?"
     );
+    const rows = (statement, terms) => statement.all(ftsQuery(terms));
     if (uniqueTerms.length > 0) {
-      for (const row of exactMatches.all(ftsQuery(uniqueTerms))) getRanked(row.rowId).exactScore = row.score;
-      for (const row of stemmedMatches.all(ftsQuery(uniqueTerms))) getRanked(row.rowId).stemmedScore = row.score;
+      for (const row of rows(exactMatches, uniqueTerms)) getRanked(row.rowId).exactScore = row.score;
+      for (const row of rows(stemmedMatches, uniqueTerms)) getRanked(row.rowId).stemmedScore = row.score;
       for (const term of uniqueTerms) {
-        for (const row of exactMatches.all(ftsQuery([term]))) {
+        for (const row of rows(exactMatches, [term])) {
           const hit = getRanked(row.rowId);
           hit.exactTerms.add(term);
           hit.matchedTerms.add(term);
         }
-        for (const row of stemmedMatches.all(ftsQuery([term]))) getRanked(row.rowId).matchedTerms.add(term);
+        for (const row of rows(stemmedMatches, [term])) getRanked(row.rowId).matchedTerms.add(term);
       }
     }
     for (let position = 0; position < documents.length; position++) {
@@ -23374,13 +23367,7 @@ function locateTranscript(env, cwd) {
   const fileName = `${sessionId}.jsonl`;
   const direct = join(projectsDir, encodeProjectDir(env.CLAUDE_PROJECT_DIR ?? cwd), fileName);
   if (existsSync(direct)) return direct;
-  let projectDirs = [];
-  try {
-    projectDirs = readdirSync(projectsDir);
-  } catch {
-    projectDirs = [];
-  }
-  for (const dir of projectDirs) {
+  for (const dir of existsSync(projectsDir) ? readdirSync(projectsDir) : []) {
     const candidate = join(projectsDir, dir, fileName);
     if (existsSync(candidate)) return candidate;
   }
@@ -23479,15 +23466,11 @@ function createServer(env = process.env, cwd = process.cwd()) {
     {
       description: TOOL_DESCRIPTION,
       inputSchema: {
-        query: string2().describe("Words, a phrase, identifier, path, or punctuation to search for."),
+        query: string2().trim().min(1).describe("Words, a phrase, identifier, path, or punctuation to search for."),
         limit: number2().optional().describe(`Maximum matches to return (default ${DEFAULT_LIMIT}).`)
       }
     },
     async ({ query, limit }) => {
-      const trimmed = query.trim();
-      if (trimmed.length === 0) {
-        return { content: [{ type: "text", text: "recall needs a non-empty query." }], isError: true };
-      }
       let file;
       try {
         file = locateTranscript(env, cwd);
@@ -23497,7 +23480,7 @@ function createServer(env = process.env, cwd = process.cwd()) {
         }
         throw error2;
       }
-      const result = search(readTranscript(file), trimmed, limit);
+      const result = search(readTranscript(file), query, limit);
       return { content: [{ type: "text", text: result.text }] };
     }
   );

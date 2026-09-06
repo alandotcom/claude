@@ -1,6 +1,6 @@
 /**
  * The recall MCP server. Claude Code starts one per session over stdio and
- * exposes its single tool to the model as mcp__recall__recall.
+ * exposes its single tool to the model as mcp__plugin_recall_recall__recall.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -34,15 +34,11 @@ export function createServer(env: NodeJS.ProcessEnv = process.env, cwd: string =
 		{
 			description: TOOL_DESCRIPTION,
 			inputSchema: {
-				query: z.string().describe("Words, a phrase, identifier, path, or punctuation to search for."),
+				query: z.string().trim().min(1).describe("Words, a phrase, identifier, path, or punctuation to search for."),
 				limit: z.number().optional().describe(`Maximum matches to return (default ${DEFAULT_LIMIT}).`),
 			},
 		},
 		async ({ query, limit }) => {
-			const trimmed = query.trim();
-			if (trimmed.length === 0) {
-				return { content: [{ type: "text", text: "recall needs a non-empty query." }], isError: true };
-			}
 			let file: string;
 			try {
 				file = locateTranscript(env, cwd);
@@ -53,7 +49,7 @@ export function createServer(env: NodeJS.ProcessEnv = process.env, cwd: string =
 				throw error;
 			}
 			// The transcript grows during the session, so every call reads it again.
-			const result = search(readTranscript(file), trimmed, limit);
+			const result = search(readTranscript(file), query, limit);
 			return { content: [{ type: "text", text: result.text }] };
 		},
 	);
