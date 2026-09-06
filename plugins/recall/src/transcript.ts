@@ -74,6 +74,19 @@ function contentText(content: unknown): string | undefined {
 }
 
 /**
+ * Claude Code records a slash command and its output as user entries wrapped
+ * in these tags. They are bookkeeping, not something the user said.
+ */
+function isCommandRecord(text: string): boolean {
+	return /^\s*<(command-name|local-command-stdout|local-command-caveat)>/.test(text);
+}
+
+/** recall's own results quote the messages they found, so indexing them would let each search feed the next. */
+function isRecallResult(toolName: string | undefined): boolean {
+	return toolName === "recall" || (toolName?.endsWith("__recall") ?? false);
+}
+
+/**
  * Pulls the searchable text out of one transcript entry. Returns one document
  * per prose block, so a user turn that carries several tool results yields one
  * document per result, each labelled with the tool that produced it.
@@ -106,21 +119,21 @@ export function entryDocuments(entry: any, toolNames: Map<string, string>): Omit
 
 	if (!Array.isArray(message.content)) {
 		const text = contentText(message.content);
-		return text ? [{ role: "user", body: text }] : [];
+		return text && !isCommandRecord(text) ? [{ role: "user", body: text }] : [];
 	}
 
 	const documents: Omit<SearchDocument, "entry" | "when">[] = [];
 	const prose: string[] = [];
 	for (const part of message.content) {
 		if (part?.type === "tool_result") {
-			const text = contentText(part.content);
-			if (!text) continue;
 			const toolName = typeof part.tool_use_id === "string" ? toolNames.get(part.tool_use_id) : undefined;
-			documents.push({ role: `tool:${toolName ?? "?"}`, body: text });
+			if (isRecallResult(toolName)) continue;
+			const text = contentText(part.content);
+			if (text) documents.push({ role: `tool:${toolName ?? "?"}`, body: text });
 			continue;
 		}
 		const text = partText(part);
-		if (text) prose.push(text);
+		if (text && !isCommandRecord(text)) prose.push(text);
 	}
 	if (prose.length > 0) documents.unshift({ role: "user", body: prose.join("\n") });
 	return documents;
