@@ -26,6 +26,16 @@ claude --plugin-dir ./plugins/recall
 Each plugin lives under `plugins/<name>` with its own `.claude-plugin/plugin.json`, README, and
 tests. `.claude-plugin/marketplace.json` at the repository root lists every plugin.
 
+The `package.json` at the repository root holds the build and test tooling for every plugin. It
+stays out of the plugin directories on purpose: Claude Code runs `npm ci` inside any plugin it
+installs that carries a `package.json` and a lockfile, and the test tooling has no business on a
+user's machine. Each plugin ships whatever it needs at runtime already built.
+
+```sh
+npm install
+npm test
+```
+
 ## License
 
 MIT
