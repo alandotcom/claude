@@ -1,0 +1,15 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "claude",
+  "owner": {
+    "name": "Alan Cohen",
+    "url": "https://github.com/alandotcom"
+  },
+  "plugins": [
+    {
+      "name": "recall",
+      "source": "./plugins/recall",
+      "description": "Search earlier messages in the current session, including messages that dropped out of context when the session compacted."
+    }
+  ]
+}
