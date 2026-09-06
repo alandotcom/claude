@@ -1,13 +1,22 @@
 {
-  "description": "After compaction, remind the model that recall can read the messages the summary replaced.",
+  "description": "Record the live session for the recall server, and remind the model after a compaction that recall can read the messages the summary replaced.",
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "compact",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/after-compact.sh\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session.mjs\""
           }
         ]
       }

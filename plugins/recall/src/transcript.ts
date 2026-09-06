@@ -18,9 +18,12 @@ import type { SearchDocument } from "./search.ts";
 
 /** The environment variables the server reads to find its own transcript. */
 export interface TranscriptEnv {
+	/** The session Claude Code started this server for. Stale after /clear or an in-session /resume. */
 	CLAUDE_CODE_SESSION_ID?: string;
 	CLAUDE_PROJECT_DIR?: string;
 	CLAUDE_CONFIG_DIR?: string;
+	/** The plugin's data directory, where hooks/session.mjs records the live session. */
+	RECALL_DATA_DIR?: string;
 	HOME?: string;
 }
 
@@ -32,13 +35,33 @@ export function encodeProjectDir(projectDir: string): string {
 }
 
 /**
- * Finds the transcript for the session the server was started in. Claude Code
- * passes the session id to MCP server processes in CLAUDE_CODE_SESSION_ID.
- * The encoded project directory is tried first. Claude Code truncates and
- * hashes very long directory names, so a scan of every project directory is
- * the fallback.
+ * The transcript path the SessionStart hook recorded for the Claude Code
+ * process that owns this server. The hook keys the file by that process's pid,
+ * which is this server's parent pid.
  */
-export function locateTranscript(env: TranscriptEnv, cwd: string): string {
+function recordedTranscript(env: TranscriptEnv, parentPid: number): string | undefined {
+	if (!env.RECALL_DATA_DIR) return undefined;
+	const file = join(env.RECALL_DATA_DIR, "sessions", `${parentPid}.json`);
+	if (!existsSync(file)) return undefined;
+	try {
+		const record = JSON.parse(readFileSync(file, "utf8"));
+		return typeof record?.transcriptPath === "string" && existsSync(record.transcriptPath) ? record.transcriptPath : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Finds the transcript of the live session. The hook's record wins because it
+ * follows /clear and /resume. Without it, the session id Claude Code gave the
+ * server at start is used: the encoded project directory is tried first, and
+ * because Claude Code truncates and hashes very long directory names, a scan
+ * of every project directory is the fallback.
+ */
+export function locateTranscript(env: TranscriptEnv, cwd: string, parentPid: number = process.ppid): string {
+	const recorded = recordedTranscript(env, parentPid);
+	if (recorded) return recorded;
+
 	const sessionId = env.CLAUDE_CODE_SESSION_ID;
 	if (!sessionId || !/^[A-Za-z0-9-]+$/.test(sessionId)) {
 		throw new TranscriptNotFound(
