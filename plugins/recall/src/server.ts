@@ -5,7 +5,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import * as z from "zod/v4";
 import { DEFAULT_LIMIT, search } from "./search.ts";
 import { TranscriptNotFound, locateTranscript, readTranscript } from "./transcript.ts";
 
