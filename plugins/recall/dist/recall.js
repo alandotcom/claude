@@ -7198,6 +7198,9 @@ var require_dist = __commonJS({
   }
 });
 
+// plugins/recall/src/main.ts
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+
 // node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
@@ -23205,7 +23208,7 @@ var StdioServerTransport = class {
   }
 };
 
-// src/search.ts
+// plugins/recall/src/search.ts
 import { DatabaseSync } from "node:sqlite";
 var DEFAULT_LIMIT = 10;
 var SNIPPET_CHARS = 400;
@@ -23252,12 +23255,16 @@ function rankDocuments(documents, query, queryTerms) {
       "SELECT rowid AS rowId, -bm25(exact_docs) AS score FROM exact_docs WHERE exact_docs MATCH ?"
     );
     const stemmedMatches = index.prepare(
-      "SELECT rowid AS rowId, -bm25(stemmed_docs) AS score FROM stemmed_docs WHERE stemmed_docs MATCH ?"
+      "SELECT rowid AS rowId, -bm25(stemmed_docs) AS score, snippet(stemmed_docs, 0, '', '', '', 8) AS anchor FROM stemmed_docs WHERE stemmed_docs MATCH ?"
     );
     const rows = (statement, terms) => statement.all(ftsQuery(terms));
     if (uniqueTerms.length > 0) {
       for (const row of rows(exactMatches, uniqueTerms)) getRanked(row.rowId).exactScore = row.score;
-      for (const row of rows(stemmedMatches, uniqueTerms)) getRanked(row.rowId).stemmedScore = row.score;
+      for (const row of rows(stemmedMatches, uniqueTerms)) {
+        const hit = getRanked(row.rowId);
+        hit.stemmedScore = row.score;
+        hit.anchor = row.anchor;
+      }
       for (const term of uniqueTerms) {
         for (const row of rows(exactMatches, [term])) {
           const hit = getRanked(row.rowId);
@@ -23286,15 +23293,15 @@ function rankDocuments(documents, query, queryTerms) {
     index.close();
   }
 }
-function snippetAround(body, query, terms) {
+function snippetAround(body, query, terms, anchor2) {
   const lower = body.toLowerCase();
   const phraseAt = lower.indexOf(query.toLowerCase());
   const termPositions = terms.map((term) => lower.indexOf(term)).filter((position) => position >= 0);
-  const at = phraseAt >= 0 ? phraseAt : termPositions.length > 0 ? Math.min(...termPositions) : -1;
-  if (at < 0) return body.slice(0, SNIPPET_CHARS);
+  const anchorAt = anchor2 ? body.indexOf(anchor2) : -1;
+  const at = phraseAt >= 0 ? phraseAt : termPositions.length > 0 ? Math.min(...termPositions) : anchorAt;
   const start = Math.max(0, at - Math.floor(SNIPPET_CHARS / 3));
-  const lead = start > 0 ? "\u2026" : "";
-  return `${lead}${body.slice(start, start + SNIPPET_CHARS).replace(/\s+/g, " ").trim()}\u2026`;
+  const text = body.slice(start, start + SNIPPET_CHARS).replace(/\s+/g, " ").trim();
+  return `${start > 0 ? "\u2026" : ""}${text}${start + SNIPPET_CHARS < body.length ? "\u2026" : ""}`;
 }
 function recallLimit(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : DEFAULT_LIMIT;
@@ -23340,13 +23347,13 @@ function search(documents, query, limit) {
     role: rankedHit.document.role,
     when: rankedHit.document.when,
     entry: rankedHit.document.entry,
-    snippet: snippetAround(rankedHit.document.body, query, terms)
+    snippet: snippetAround(rankedHit.document.body, query, terms, rankedHit.anchor)
   }));
   const rendered = render(chosen, ranked.length);
   return { text: rendered.text, matches: ranked.length, shown: rendered.shown };
 }
 
-// src/transcript.ts
+// plugins/recall/src/transcript.ts
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -23355,7 +23362,20 @@ var TranscriptNotFound = class extends Error {
 function encodeProjectDir(projectDir) {
   return projectDir.replace(/[^A-Za-z0-9]/g, "-");
 }
-function locateTranscript(env, cwd) {
+function recordedTranscript(env, parentPid) {
+  if (!env.RECALL_DATA_DIR) return void 0;
+  const file = join(env.RECALL_DATA_DIR, "sessions", `${parentPid}.json`);
+  if (!existsSync(file)) return void 0;
+  try {
+    const record2 = JSON.parse(readFileSync(file, "utf8"));
+    return typeof record2?.transcriptPath === "string" && existsSync(record2.transcriptPath) ? record2.transcriptPath : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function locateTranscript(env, cwd, parentPid = process.ppid) {
+  const recorded = recordedTranscript(env, parentPid);
+  if (recorded) return recorded;
   const sessionId = env.CLAUDE_CODE_SESSION_ID;
   if (!sessionId || !/^[A-Za-z0-9-]+$/.test(sessionId)) {
     throw new TranscriptNotFound(
@@ -23384,6 +23404,12 @@ function contentText(content) {
   const parts = content.map(partText).filter((text) => typeof text === "string" && text.length > 0);
   return parts.length > 0 ? parts.join("\n") : void 0;
 }
+function isCommandRecord(text) {
+  return /^\s*<(command-name|local-command-stdout|local-command-caveat)>/.test(text);
+}
+function isRecallResult(toolName) {
+  return toolName === "recall" || (toolName?.endsWith("__recall") ?? false);
+}
 function entryDocuments(entry, toolNames) {
   if (entry?.type !== "user" && entry?.type !== "assistant") return [];
   if (entry.isSidechain === true || entry.isMeta === true) return [];
@@ -23406,20 +23432,20 @@ function entryDocuments(entry, toolNames) {
   }
   if (!Array.isArray(message.content)) {
     const text = contentText(message.content);
-    return text ? [{ role: "user", body: text }] : [];
+    return text && !isCommandRecord(text) ? [{ role: "user", body: text }] : [];
   }
   const documents = [];
   const prose = [];
   for (const part of message.content) {
     if (part?.type === "tool_result") {
-      const text2 = contentText(part.content);
-      if (!text2) continue;
       const toolName = typeof part.tool_use_id === "string" ? toolNames.get(part.tool_use_id) : void 0;
-      documents.push({ role: `tool:${toolName ?? "?"}`, body: text2 });
+      if (isRecallResult(toolName)) continue;
+      const text2 = contentText(part.content);
+      if (text2) documents.push({ role: `tool:${toolName ?? "?"}`, body: text2 });
       continue;
     }
     const text = partText(part);
-    if (text) prose.push(text);
+    if (text && !isCommandRecord(text)) prose.push(text);
   }
   if (prose.length > 0) documents.unshift({ role: "user", body: prose.join("\n") });
   return documents;
@@ -23449,7 +23475,7 @@ function readTranscript(file) {
   return documents;
 }
 
-// src/server.ts
+// plugins/recall/src/server.ts
 var TOOL_DESCRIPTION = "Search earlier messages in this session, including messages that dropped out of context when the session compacted. Use it before re-reading files or deciding something this session may already have decided, and on the first turn after a compaction. Only this session is searched, so an empty result means nothing matched here, not that the subject never came up. Queries may contain multiple words; ranking favors a literal phrase, then relevant term coverage, then recency. Literal identifiers, paths, and punctuation are also supported.";
 function createServer(env = process.env, cwd = process.cwd()) {
   const server = new McpServer(
@@ -23491,7 +23517,15 @@ async function main() {
   await server.connect(new StdioServerTransport());
 }
 
-// src/main.ts
+// plugins/recall/src/main.ts
+try {
+  const probe = new DatabaseSync2(":memory:");
+  probe.exec("CREATE VIRTUAL TABLE probe USING fts5(body, tokenize = 'porter unicode61')");
+  probe.close();
+} catch (error2) {
+  console.error(`recall needs Node.js 22.19 or later with SQLite FTS5 support; this is ${process.version}: ${String(error2)}`);
+  process.exit(1);
+}
 main().catch((error2) => {
   console.error(error2);
   process.exit(1);
