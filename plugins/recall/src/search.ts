@@ -39,6 +39,8 @@ interface RankedDocument {
 	exactTerms: Set<string>;
 	matchedTerms: Set<string>;
 	literalPhrase: boolean;
+	/** Text around the stemmed match, for locating a hit whose exact words differ from the query. */
+	anchor?: string;
 }
 
 export function tokenize(input: string): string[] {
@@ -85,14 +87,20 @@ export function rankDocuments(documents: SearchDocument[], query: string, queryT
 		const exactMatches = index.prepare(
 			"SELECT rowid AS rowId, -bm25(exact_docs) AS score FROM exact_docs WHERE exact_docs MATCH ?",
 		);
+		// snippet() with empty markers returns the document's own text around
+		// the best match, so the anchor is a substring of the body.
 		const stemmedMatches = index.prepare(
-			"SELECT rowid AS rowId, -bm25(stemmed_docs) AS score FROM stemmed_docs WHERE stemmed_docs MATCH ?",
+			"SELECT rowid AS rowId, -bm25(stemmed_docs) AS score, snippet(stemmed_docs, 0, '', '', '', 8) AS anchor FROM stemmed_docs WHERE stemmed_docs MATCH ?",
 		);
 		const rows = (statement: typeof exactMatches, terms: string[]) =>
-			statement.all(ftsQuery(terms)) as { rowId: number; score: number }[];
+			statement.all(ftsQuery(terms)) as { rowId: number; score: number; anchor?: string }[];
 		if (uniqueTerms.length > 0) {
 			for (const row of rows(exactMatches, uniqueTerms)) getRanked(row.rowId).exactScore = row.score;
-			for (const row of rows(stemmedMatches, uniqueTerms)) getRanked(row.rowId).stemmedScore = row.score;
+			for (const row of rows(stemmedMatches, uniqueTerms)) {
+				const hit = getRanked(row.rowId);
+				hit.stemmedScore = row.score;
+				hit.anchor = row.anchor;
+			}
 			for (const term of uniqueTerms) {
 				for (const row of rows(exactMatches, [term])) {
 					const hit = getRanked(row.rowId);
@@ -130,15 +138,16 @@ export function rankDocuments(documents: SearchDocument[], query: string, queryT
 	}
 }
 
-export function snippetAround(body: string, query: string, terms: string[]): string {
+/** The whole query, then the first query word, then the stemmed match decide where the snippet is cut. */
+export function snippetAround(body: string, query: string, terms: string[], anchor?: string): string {
 	const lower = body.toLowerCase();
 	const phraseAt = lower.indexOf(query.toLowerCase());
 	const termPositions = terms.map((term) => lower.indexOf(term)).filter((position) => position >= 0);
-	const at = phraseAt >= 0 ? phraseAt : termPositions.length > 0 ? Math.min(...termPositions) : -1;
-	if (at < 0) return body.slice(0, SNIPPET_CHARS);
+	const anchorAt = anchor ? body.indexOf(anchor) : -1;
+	const at = phraseAt >= 0 ? phraseAt : termPositions.length > 0 ? Math.min(...termPositions) : anchorAt;
 	const start = Math.max(0, at - Math.floor(SNIPPET_CHARS / 3));
-	const lead = start > 0 ? "…" : "";
-	return `${lead}${body.slice(start, start + SNIPPET_CHARS).replace(/\s+/g, " ").trim()}…`;
+	const text = body.slice(start, start + SNIPPET_CHARS).replace(/\s+/g, " ").trim();
+	return `${start > 0 ? "…" : ""}${text}${start + SNIPPET_CHARS < body.length ? "…" : ""}`;
 }
 
 export function recallLimit(value: unknown): number {
@@ -190,7 +199,7 @@ export function search(documents: SearchDocument[], query: string, limit?: numbe
 		role: rankedHit.document.role,
 		when: rankedHit.document.when,
 		entry: rankedHit.document.entry,
-		snippet: snippetAround(rankedHit.document.body, query, terms),
+		snippet: snippetAround(rankedHit.document.body, query, terms, rankedHit.anchor),
 	}));
 	const rendered = render(chosen, ranked.length);
 	return { text: rendered.text, matches: ranked.length, shown: rendered.shown };

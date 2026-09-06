@@ -62,3 +62,10 @@ test("snippetAround centres on the phrase and marks trimmed ends", () => {
 	assert.ok(snippet.includes("target phrase here"));
 	assert.ok(snippet.length <= 402);
 });
+
+test("a hit found only through stemming is cut around the stemmed word", () => {
+	const body = `${"filler ".repeat(300)}we kept connecting to the wrong host ${"filler ".repeat(300)}`;
+	const result = search([doc("long", body)], "connection");
+	assert.equal(result.matches, 1);
+	assert.match(result.text, /connecting to the wrong host/);
+});
